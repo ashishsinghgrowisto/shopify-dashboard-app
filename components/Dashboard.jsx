@@ -1109,6 +1109,27 @@ export default function Dashboard({ payload, onRefetch, loading }) {
   const [view, setView] = useState("all");
   const [tab, setTab] = useState("overview");
 
+  // Referrer and campaign breakdowns are the only parts still fetched live from
+  // Shopify. They're requested the first time you open the tab that shows them,
+  // and carried on every later refetch so switching tabs doesn't lose them.
+  const [includes, setIncludes] = useState([]);
+  const includeParam = includes.join(",");
+
+  const TAB_NEEDS = { traffic: "traffic", campaigns: "campaigns" };
+
+  function selectTab(id) {
+    setTab(id);
+    const need = TAB_NEEDS[id];
+    if (!need || includes.includes(need)) return;
+    const next = [...includes, need];
+    setIncludes(next);
+    onRefetch({ include: next.join(",") });
+  }
+
+  function refetchWith(opts) {
+    onRefetch({ ...opts, include: includeParam });
+  }
+
   const stores = payload.stores || [];
   const byStore = payload.byStore || {};
   const all = payload.all;
@@ -1164,7 +1185,7 @@ export default function Dashboard({ payload, onRefetch, loading }) {
               {payload.meta?.elapsedMs ? ` · ${(payload.meta.elapsedMs / 1000).toFixed(1)}s` : ""}
             </p>
           </div>
-          <button onClick={() => onRefetch({ forceRefresh: true })} disabled={loading}
+          <button onClick={() => refetchWith({ forceRefresh: true })} disabled={loading}
             style={{
               display: "flex", alignItems: "center", gap: 5, background: CL.bg,
               border: "1px solid " + CL.bd, borderRadius: 6, padding: "5px 11px",
@@ -1179,8 +1200,8 @@ export default function Dashboard({ payload, onRefetch, loading }) {
           range={range}
           compare={compare}
           granularity={payload.granularity}
-          onGranularity={(g) => onRefetch({ granularity: g })}
-          onApply={(r, c) => onRefetch({ range: r, compare: c })}
+          onGranularity={(g) => refetchWith({ granularity: g })}
+          onApply={(r, c) => refetchWith({ range: r, compare: c })}
         />
 
         <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
@@ -1208,7 +1229,7 @@ export default function Dashboard({ payload, onRefetch, loading }) {
 
       <div style={{ display: "flex", gap: 2, padding: "6px 16px", borderBottom: "1px solid " + CL.bd, background: CL.cd, overflowX: "auto" }}>
         {TABS.map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id)} style={{
+          <button key={t.id} onClick={() => selectTab(t.id)} style={{
             padding: "6px 14px", borderRadius: 6, border: "none", cursor: "pointer",
             fontFamily: "inherit", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap",
             background: tab === t.id ? accent : "transparent",
