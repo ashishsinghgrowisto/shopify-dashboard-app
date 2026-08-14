@@ -4,6 +4,7 @@
 
 import crypto from "crypto";
 import { saveShop, tokenStoreBackend } from "../../../../lib/token-store";
+import { getAppCredentials, normalizeSlot } from "../../../../lib/oauth-apps";
 
 export const dynamic = "force-dynamic";
 
@@ -42,9 +43,21 @@ export async function GET(request) {
   const url = new URL(request.url);
   const p = url.searchParams;
 
-  const apiKey = process.env.SHOPIFY_API_KEY;
-  const apiSecret = process.env.SHOPIFY_API_SECRET;
-  if (!apiKey || !apiSecret) return fail("OAuth is not configured on this deployment", 500);
+  // Which Shopify app issued this code? The slot comes from the redirect URI,
+  // cross-checked against the cookie set at install time so a tampered redirect
+  // can't make us verify against a different app's secret.
+  const slotFromQuery = normalizeSlot(p.get("slot"));
+  const slotFromCookie = readCookie(request, "shopify_oauth_slot");
+  const slot = slotFromCookie ? normalizeSlot(slotFromCookie) : slotFromQuery;
+
+  if (slotFromCookie && normalizeSlot(slotFromCookie) !== slotFromQuery) {
+    return fail("Slot mismatch between the install request and this callback", 401);
+  }
+
+  const { apiKey, apiSecret, configured } = getAppCredentials(slot);
+  if (!configured) {
+    return fail(`OAuth is not configured for slot ${slot} on this deployment`, 500);
+  }
 
   const shop = (p.get("shop") || "").toLowerCase();
   const code = p.get("code");
@@ -119,13 +132,12 @@ export async function GET(request) {
   // it is never written to a log, a URL, or a query string.
 
   const label = shop.replace(/\.myshopify\.com$/, "");
-  const suggestedIndex = Number(url.searchParams.get("slot")) || 1;
   const html = renderTokenPage({
     shop,
     label,
     token: tokenPayload.access_token,
     scopes,
-    index: suggestedIndex,
+    index: slot,
     warnings,
   });
 
@@ -137,6 +149,7 @@ export async function GET(request) {
     "X-Robots-Tag": "noindex, nofollow",
   });
   headers.append("Set-Cookie", "shopify_oauth_state=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0");
+  headers.append("Set-Cookie", "shopify_oauth_slot=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0");
   return new Response(html, { status: 200, headers });
 }
 
@@ -182,8 +195,11 @@ function renderTokenPage({ shop, label, token, scopes, index, warnings }) {
 
   <p style="font-size:12px;color:#64748B;line-height:1.8;margin-top:22px">
     After redeploying, open <code style="color:#C4B5FD">/api/diagnose</code> to confirm which analytics
-    datasets this store returns. Connecting another store? Repeat the install with
-    <code style="color:#C4B5FD">?slot=${index + 1}</code> so the variables don't overwrite these.
+    datasets this store returns. Connecting another store? It needs its own Shopify app
+    (custom distribution is one store per app) — add that app's credentials as
+    <code style="color:#C4B5FD">SHOPIFY_API_KEY_${index + 1}</code> /
+    <code style="color:#C4B5FD">SHOPIFY_API_SECRET_${index + 1}</code>, then install with
+    <code style="color:#C4B5FD">?slot=${index + 1}</code>.
   </p>
 </div>
 <script>
