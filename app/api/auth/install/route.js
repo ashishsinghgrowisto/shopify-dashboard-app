@@ -1,12 +1,17 @@
 // app/api/auth/install/route.js
-// Starts the Shopify OAuth install for one store.
+// Starts the Shopify OAuth grant for one store.
 //
-//   /api/auth/install?shop=clientstore.myshopify.com
+//   /api/auth/install?shop=clientstore.myshopify.com          → slot 1
+//   /api/auth/install?shop=clientstore.myshopify.com&slot=2   → slot 2
 //
-// Only needed if you distribute this as a real Shopify app. If you configure
-// stores with STORE_n_* env vars instead, you never touch this route.
+// The slot selects which Shopify app's credentials to use, and determines which
+// STORE_n_* variables the callback prints. Custom-distribution apps must be
+// installed once via the signed link from Partners → Distribution BEFORE this
+// route will work — Shopify rejects a plain authorize URL for an app that the
+// store hasn't installed yet.
 
 import crypto from "crypto";
+import { getAppCredentials, normalizeSlot, configuredSlots } from "../../../../lib/oauth-apps";
 
 export const dynamic = "force-dynamic";
 
@@ -16,13 +21,19 @@ export const SCOPES = process.env.SHOPIFY_SCOPES || "read_reports";
 export async function GET(request) {
   const url = new URL(request.url);
   const shop = (url.searchParams.get("shop") || "").trim().toLowerCase();
+  const slot = normalizeSlot(url.searchParams.get("slot"));
 
-  const apiKey = process.env.SHOPIFY_API_KEY;
-  if (!apiKey || !process.env.SHOPIFY_API_SECRET) {
+  const { apiKey, apiSecret, configured } = getAppCredentials(slot);
+
+  if (!configured) {
+    const suffix = slot === 1 ? "" : `_${slot}`;
     return Response.json(
       {
-        error: "OAuth is not configured",
-        hint: "Set SHOPIFY_API_KEY and SHOPIFY_API_SECRET, or configure stores with STORE_n_* env vars instead.",
+        error: `OAuth is not configured for slot ${slot}`,
+        hint:
+          `Set SHOPIFY_API_KEY${suffix} and SHOPIFY_API_SECRET${suffix} to this store's ` +
+          `Shopify app credentials (Dev Dashboard → the app → Settings → Credentials), then redeploy.`,
+        slotsConfigured: configuredSlots(),
       },
       { status: 500 }
     );
@@ -36,7 +47,11 @@ export async function GET(request) {
   }
 
   const state = crypto.randomBytes(24).toString("hex");
-  const redirectUri = `${url.origin}/api/auth/callback`;
+
+  // The slot rides along in the redirect URI so the callback knows which app's
+  // secret to verify against. This exact URL must be listed in the app's
+  // allowed redirection URLs.
+  const redirectUri = `${url.origin}/api/auth/callback?slot=${slot}`;
 
   const authorize = new URL(`https://${shop}/admin/oauth/authorize`);
   authorize.searchParams.set("client_id", apiKey);
@@ -44,11 +59,15 @@ export async function GET(request) {
   authorize.searchParams.set("redirect_uri", redirectUri);
   authorize.searchParams.set("state", state);
 
-  const res = Response.redirect(authorize.toString(), 302);
-  const headers = new Headers(res.headers);
+  const headers = new Headers({ Location: authorize.toString() });
   headers.append(
     "Set-Cookie",
     `shopify_oauth_state=${state}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=600`
+  );
+  // Remember the slot server-side too, so a tampered redirect can't switch apps.
+  headers.append(
+    "Set-Cookie",
+    `shopify_oauth_slot=${slot}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=600`
   );
   return new Response(null, { status: 302, headers });
 }
