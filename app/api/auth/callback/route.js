@@ -93,17 +93,107 @@ export async function GET(request) {
     );
   }
 
-  try {
-    await saveShop({ shop, token: tokenPayload.access_token, scope: scopes });
-  } catch (err) {
-    return fail("Could not persist the store token: " + err.message, 500);
+  const persistent = tokenStoreBackend() !== "memory";
+
+  if (persistent) {
+    try {
+      await saveShop({ shop, token: tokenPayload.access_token, scope: scopes });
+    } catch (err) {
+      return fail("Could not persist the store token: " + err.message, 500);
+    }
+
+    const target = new URL("/", url.origin);
+    target.searchParams.set("installed", shop);
+    if (warnings.length) target.searchParams.set("warn", warnings.join(" | "));
+
+    const headers = new Headers({ Location: target.toString() });
+    headers.append("Set-Cookie", "shopify_oauth_state=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0");
+    return new Response(null, { status: 302, headers });
   }
 
-  const target = new URL("/", url.origin);
-  target.searchParams.set("installed", shop);
-  if (warnings.length) target.searchParams.set("warn", warnings.join(" | "));
+  // ── No KV configured: show the token once so it can go into env vars ──
+  //
+  // This is the deliberate default for the custom-distribution setup: one app
+  // per client store, token pasted into STORE_n_TOKEN. Env vars are permanent
+  // and need no external database. The token is rendered here exactly once —
+  // it is never written to a log, a URL, or a query string.
 
-  const headers = new Headers({ Location: target.toString() });
+  const label = shop.replace(/\.myshopify\.com$/, "");
+  const suggestedIndex = Number(url.searchParams.get("slot")) || 1;
+  const html = renderTokenPage({
+    shop,
+    label,
+    token: tokenPayload.access_token,
+    scopes,
+    index: suggestedIndex,
+    warnings,
+  });
+
+  const headers = new Headers({
+    "Content-Type": "text/html; charset=utf-8",
+    // Never let this page be cached or indexed
+    "Cache-Control": "no-store, no-cache, must-revalidate, private",
+    "Referrer-Policy": "no-referrer",
+    "X-Robots-Tag": "noindex, nofollow",
+  });
   headers.append("Set-Cookie", "shopify_oauth_state=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0");
-  return new Response(null, { status: 302, headers });
+  return new Response(html, { status: 200, headers });
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function renderTokenPage({ shop, label, token, scopes, index, warnings }) {
+  const envBlock =
+    `STORE_${index}_LABEL=${label}\n` +
+    `STORE_${index}_DOMAIN=${shop}\n` +
+    `STORE_${index}_TOKEN=${token}`;
+
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>${esc(label)} connected</title></head>
+<body style="margin:0;background:#0B0F1A;color:#E2E8F0;font-family:system-ui,-apple-system,sans-serif">
+<div style="max-width:760px;margin:0 auto;padding:40px 20px">
+  <div style="font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#22C55E;margin-bottom:6px">Installed</div>
+  <h1 style="font-size:24px;margin:0 0 6px">${esc(label)} is connected</h1>
+  <p style="font-size:13px;color:#94A3B8;margin:0 0 22px">
+    ${esc(shop)} &middot; scopes granted: <code style="color:#C4B5FD">${esc(scopes || "none")}</code>
+  </p>
+
+  ${warnings.length ? `<div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.35);border-radius:8px;padding:12px 14px;margin-bottom:20px;font-size:12px;line-height:1.6">
+    ${warnings.map((w) => `&#9888; ${esc(w)}`).join("<br>")}
+  </div>` : ""}
+
+  <div style="background:#131825;border:1px solid #1E2A42;border-radius:12px;padding:18px">
+    <h2 style="font-size:14px;margin:0 0 4px">Add these three variables in Vercel, then redeploy</h2>
+    <p style="font-size:12px;color:#94A3B8;margin:0 0 12px;line-height:1.6">
+      Project &rarr; Settings &rarr; Environment Variables. This token is shown once and cannot be
+      retrieved again &mdash; reinstall the app if you lose it.
+    </p>
+    <textarea id="env" readonly rows="3" style="width:100%;box-sizing:border-box;background:#0B0F1A;color:#E2E8F0;border:1px solid #1E2A42;border-radius:8px;padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.7;resize:vertical">${esc(envBlock)}</textarea>
+    <button id="copy" style="margin-top:12px;padding:9px 16px;background:#C4B5FD;color:#0B0F1A;border:none;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer">Copy all three</button>
+    <span id="done" style="margin-left:10px;font-size:12px;color:#22C55E;visibility:hidden">Copied</span>
+  </div>
+
+  <p style="font-size:12px;color:#64748B;line-height:1.8;margin-top:22px">
+    After redeploying, open <code style="color:#C4B5FD">/api/diagnose</code> to confirm which analytics
+    datasets this store returns. Connecting another store? Repeat the install with
+    <code style="color:#C4B5FD">?slot=${index + 1}</code> so the variables don't overwrite these.
+  </p>
+</div>
+<script>
+  document.getElementById('copy').addEventListener('click', function () {
+    var ta = document.getElementById('env');
+    ta.select();
+    navigator.clipboard.writeText(ta.value).then(function () {
+      document.getElementById('done').style.visibility = 'visible';
+    });
+  });
+</script>
+</body></html>`;
 }
