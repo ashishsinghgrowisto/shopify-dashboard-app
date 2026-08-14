@@ -1,22 +1,47 @@
 // middleware.js
-// Optional password gate for the whole dashboard.
+// Password gate for the agency dashboard.
 //
-// Set DASHBOARD_PASSWORD (and optionally DASHBOARD_USER, default "growisto") to
-// require HTTP basic auth. Leave DASHBOARD_PASSWORD unset and the dashboard is open.
+// This dashboard aggregates revenue across every connected client store, so the
+// gate FAILS CLOSED: if DASHBOARD_PASSWORD is not set, the dashboard is locked
+// rather than public. An unprotected URL here would expose every client's
+// numbers to anyone who has the link — including a client who finds it.
 //
-// This exists because the dashboard aggregates client revenue across brands — a
-// public URL would expose every client's numbers to anyone with the link.
+// Exempt from the gate:
+//   /api/auth/*  — Shopify's OAuth callback can't send basic auth
+//   /installed   — the neutral page merchants see inside their own Shopify admin
 
 import { NextResponse } from "next/server";
 
 export const config = {
-  // Everything except Shopify's OAuth callback (Shopify can't send basic auth)
-  matcher: ["/((?!api/auth|_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!api/auth|installed|_next/static|_next/image|favicon.ico).*)"],
 };
+
+function lockedResponse(message, detail) {
+  return new NextResponse(
+    `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dashboard locked</title></head>
+<body style="margin:0;background:#0B0F1A;color:#E2E8F0;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px">
+<div style="background:#131825;border:1px solid #1E2A42;border-radius:14px;padding:30px;max-width:520px">
+<h1 style="font-size:19px;margin:0 0 10px">${message}</h1>
+<p style="font-size:13px;color:#94A3B8;line-height:1.75;margin:0">${detail}</p>
+</div></body></html>`,
+    { status: 503, headers: { "Content-Type": "text/html; charset=utf-8" } }
+  );
+}
 
 export function middleware(request) {
   const password = process.env.DASHBOARD_PASSWORD;
-  if (!password) return NextResponse.next();
+
+  // Fail closed — never serve cross-client revenue data without a password.
+  if (!password) {
+    return lockedResponse(
+      "Dashboard is locked",
+      "No DASHBOARD_PASSWORD is set for this deployment. Because this dashboard combines " +
+        "revenue from every connected client store, it stays locked until a password is " +
+        "configured. Add DASHBOARD_PASSWORD in your hosting environment variables and redeploy."
+    );
+  }
 
   const expectedUser = process.env.DASHBOARD_USER || "growisto";
   const header = request.headers.get("authorization") || "";
@@ -27,7 +52,15 @@ export function middleware(request) {
       const idx = decoded.indexOf(":");
       const user = decoded.slice(0, idx);
       const pass = decoded.slice(idx + 1);
-      if (user === expectedUser && pass === password) return NextResponse.next();
+
+      // Constant-ish time compare to avoid trivially leaking length/prefix
+      const ok =
+        user.length === expectedUser.length &&
+        pass.length === password.length &&
+        user === expectedUser &&
+        pass === password;
+
+      if (ok) return NextResponse.next();
     } catch {
       // fall through to challenge
     }
@@ -35,6 +68,10 @@ export function middleware(request) {
 
   return new NextResponse("Authentication required", {
     status: 401,
-    headers: { "WWW-Authenticate": 'Basic realm="Shopify Portfolio Dashboard", charset="UTF-8"' },
+    headers: {
+      "WWW-Authenticate": 'Basic realm="Growisto Portfolio Dashboard", charset="UTF-8"',
+      // Never let a client's browser cache a dashboard response
+      "Cache-Control": "no-store",
+    },
   });
 }
