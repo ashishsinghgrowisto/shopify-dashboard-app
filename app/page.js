@@ -38,7 +38,7 @@ export default function Home() {
   const [hint, setHint] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  const load = useCallback(async (r, c, g, forceRefresh) => {
+  const load = useCallback(async (r, c, g, forceRefresh, include) => {
     setLoading(true);
     setError(null);
     const params = new URLSearchParams({
@@ -46,6 +46,9 @@ export default function Home() {
     });
     if (g) params.set("granularity", g);
     if (forceRefresh) params.set("refresh", "1");
+    // Only ask Shopify for the breakdowns the open tab actually shows. The
+    // timeseries half is served from the synced database either way.
+    if (include !== undefined) params.set("include", include);
 
     try {
       const res = await fetch(`/api/dashboard?${params.toString()}`);
@@ -64,7 +67,9 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    load(defaults.range, defaults.compare, null, false);
+    // First paint needs no dimensional breakdowns — Overview reads entirely
+    // from synced data, so this costs zero Shopify calls once a sync has run.
+    load(defaults.range, defaults.compare, null, false, "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -75,7 +80,7 @@ export default function Home() {
     if (opts.range) setRange(opts.range);
     if (opts.compare) setCompare(opts.compare);
     if (opts.granularity !== undefined) setGranularity(opts.granularity);
-    load(r, c, g, Boolean(opts.forceRefresh));
+    load(r, c, g, Boolean(opts.forceRefresh), opts.include);
   }, [range, compare, granularity, load]);
 
   if (!payload && loading) {
