@@ -6,10 +6,12 @@
 // Optional: &granularity=day|week|month  &stores=cp,nb  &refresh=1
 
 import { getAllStores } from "../../../lib/stores";
-import { fetchStoreData, isoDate, pickGranularity } from "../../../lib/queries";
+import { isoDate, pickGranularity } from "../../../lib/queries";
+import { fetchStoreDataServed } from "../../../lib/serve";
 import { consolidate } from "../../../lib/consolidate";
 import { mapLimit, cacheStats } from "../../../lib/shopifyql";
 import { isMockEnabled, buildMockPayload } from "../../../lib/mock";
+import { dbAvailable } from "../../../lib/db";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60; // Vercel: allow slow multi-store fan-out
@@ -98,23 +100,35 @@ export async function GET(request) {
     parseInt(process.env.STORE_CONCURRENCY || "6", 10) || 6
   );
 
+  // The dimensional breakdowns are only worth fetching for the tab being viewed.
+  // Omit `include` and both are fetched, which keeps older clients working.
+  const rawInclude = p.get("include");
+  const include = rawInclude === null
+    ? { traffic: true, campaigns: true }
+    : {
+        traffic: rawInclude.split(",").map((s) => s.trim()).includes("traffic"),
+        campaigns: rawInclude.split(",").map((s) => s.trim()).includes("campaigns"),
+      };
+
   const settled = await mapLimit(selected, storeConcurrency, (store) =>
-    fetchStoreData(
+    fetchStoreDataServed(
       store,
       { from, to },
       { from: cfrom, to: cto },
-      { granularity, forceRefresh }
+      { granularity, forceRefresh, include, forceLive: p.get("live") === "1" }
     )
   );
 
   const byStore = {};
   const warnings = [];
   const failedStores = [];
+  const sources = {};
 
   selected.forEach((store, i) => {
     const r = settled[i];
     if (r && r.ok) {
       byStore[store.key] = r.value.data;
+      sources[store.key] = r.value.source;
       warnings.push(...r.value.warnings);
     } else {
       failedStores.push({
@@ -146,6 +160,9 @@ export async function GET(request) {
         cache: cacheStats(),
         storesRequested: selected.length,
         storesReturned: publicStores.length,
+        database: dbAvailable() ? "connected" : "not configured",
+        sources, // per store: "db" | "live" | "live-fallback"
+        include,
       },
       lastUpdated: new Date().toISOString(),
     },
