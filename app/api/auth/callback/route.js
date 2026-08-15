@@ -3,7 +3,7 @@
 // code for a permanent (offline) Admin API token, and stores it.
 
 import crypto from "crypto";
-import { saveShop, tokenStoreBackend } from "../../../../lib/token-store";
+import { saveShop, tokenStorePersists } from "../../../../lib/token-store";
 import { getAppCredentials, normalizeSlot } from "../../../../lib/oauth-apps";
 
 export const dynamic = "force-dynamic";
@@ -100,27 +100,32 @@ export async function GET(request) {
       "The granted scopes do not include read_reports, which ShopifyQL analytics requires. Update the app's scopes and reinstall."
     );
   }
-  if (tokenStoreBackend() === "memory") {
+  if (!tokenStorePersists()) {
     warnings.push(
-      "No KV backend is configured, so this token is only held in memory and will be lost shortly. Set KV_REST_API_URL and KV_REST_API_TOKEN to persist installs."
+      "No database is configured, so this token is only held in memory and will be lost shortly. Set DATABASE_URL to persist installs."
     );
   }
 
-  const persistent = tokenStoreBackend() !== "memory";
-
-  if (persistent) {
+  if (tokenStorePersists()) {
     try {
       await saveShop({ shop, token: tokenPayload.access_token, scope: scopes });
     } catch (err) {
       return fail("Could not persist the store token: " + err.message, 500);
     }
 
-    const target = new URL("/", url.origin);
-    target.searchParams.set("installed", shop);
-    if (warnings.length) target.searchParams.set("warn", warnings.join(" | "));
+    // Always land on /installed — the neutral merchant page — never on "/".
+    //
+    // Under a public app, whoever finishes this flow is usually the merchant,
+    // and "/" is the agency's cross-client portfolio. Redirecting there would
+    // put every client's revenue one redirect away from the person who just
+    // clicked Install. The agency reaches the dashboard by opening it directly;
+    // nobody needs this redirect to be clever.
+    const target = new URL("/installed", url.origin);
+    target.searchParams.set("shop", shop);
 
     const headers = new Headers({ Location: target.toString() });
     headers.append("Set-Cookie", "shopify_oauth_state=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0");
+    headers.append("Set-Cookie", "shopify_oauth_slot=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0");
     return new Response(null, { status: 302, headers });
   }
 
