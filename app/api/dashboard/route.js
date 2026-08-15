@@ -151,8 +151,15 @@ export async function GET(request) {
   if (p.get("probe") === "1" && dbAvailable()) {
     try {
       const sql = getSql();
+      // Neon names every branch's database "neondb", so current_database() can't
+      // tell two branches apart — the host can.
+      const raw = process.env.DATABASE_URL || process.env.POSTGRES_URL || "";
       probe = {
+        host: raw ? new URL(raw).host : null,
+        envVar: process.env.DATABASE_URL ? "DATABASE_URL" : "POSTGRES_URL",
         where: await sql`SELECT current_database() AS db, current_schema() AS schema, current_user AS role`,
+        totals: await sql`SELECT count(*)::int AS rows, count(DISTINCT store_key)::int AS stores, min(day)::text AS min_day, max(day)::text AS max_day FROM daily_metrics`,
+        keys: await sql`SELECT DISTINCT store_key FROM daily_metrics`,
         coverage: await coverage(selected[0].key, from, to),
         storeKey: selected[0].key,
       };
