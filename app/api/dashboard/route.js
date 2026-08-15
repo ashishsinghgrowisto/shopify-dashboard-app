@@ -11,7 +11,7 @@ import { fetchStoreDataServed } from "../../../lib/serve";
 import { consolidate } from "../../../lib/consolidate";
 import { mapLimit, cacheStats } from "../../../lib/shopifyql";
 import { isMockEnabled, buildMockPayload } from "../../../lib/mock";
-import { dbAvailable } from "../../../lib/db";
+import { dbAvailable, coverage, getSql } from "../../../lib/db";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60; // Vercel: allow slow multi-store fan-out
@@ -144,6 +144,23 @@ export async function GET(request) {
     }
   });
 
+  // ?probe=1 answers "is this function looking at the same database the sync
+  // wrote to?" — the one question a per-store source of "live-fallback" leaves
+  // open when /api/sync insists the rows are there.
+  let probe;
+  if (p.get("probe") === "1" && dbAvailable()) {
+    try {
+      const sql = getSql();
+      probe = {
+        where: await sql`SELECT current_database() AS db, current_schema() AS schema, current_user AS role`,
+        coverage: await coverage(selected[0].key, from, to),
+        storeKey: selected[0].key,
+      };
+    } catch (err) {
+      probe = { error: err.message };
+    }
+  }
+
   const publicStores = selected
     .filter((s) => byStore[s.key])
     .map(({ key, label, color, icon, domain, group }) => ({ key, label, color, icon, domain, group }));
@@ -167,6 +184,7 @@ export async function GET(request) {
         database: dbAvailable() ? "connected" : "not configured",
         sources, // per store: "db" | "live" | "live-fallback"
         synced,  // per store: { days, minDay, maxDay } present in Postgres
+        ...(probe ? { probe } : {}),
         include,
       },
       lastUpdated: new Date().toISOString(),
