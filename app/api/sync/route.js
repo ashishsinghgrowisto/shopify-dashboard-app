@@ -20,7 +20,7 @@
 
 import { getAllStores } from "../../../lib/stores";
 import { syncAllStores } from "../../../lib/sync";
-import { dbAvailable, ensureSchema, recentSyncRuns, coverage, lastSyncedDay } from "../../../lib/db";
+import { dbAvailable, ensureSchema, recentSyncRuns, coverage, lastSyncedDay, getSql } from "../../../lib/db";
 import { isoDate } from "../../../lib/queries";
 
 export const dynamic = "force-dynamic";
@@ -95,17 +95,25 @@ async function handle(request) {
   if (url.searchParams.get("status") === "1") {
     await ensureSchema();
     const today = isoDate(Date.now());
+    // ?from=&to= runs coverage over exactly the window the dashboard asked for,
+    // so "the data is there" and "the dashboard can see it" can be compared
+    // directly rather than inferred.
+    const qFrom = url.searchParams.get("from");
+    const qTo = url.searchParams.get("to");
     const perStore = {};
     for (const s of all) {
       perStore[s.key] = {
         domain: s.domain,
         lastSyncedDay: await lastSyncedDay(s.key),
         last400Days: await coverage(s.key, isoDate(Date.now() - 399 * 86400000), today),
+        requestedWindow: qFrom && qTo ? await coverage(s.key, qFrom, qTo) : null,
       };
     }
+    const sql = getSql();
     return Response.json({
       database: "connected",
       today,
+      where: await sql`SELECT current_database() AS db, current_schema() AS schema, current_user AS role`,
       stores: perStore,
       recentRuns: await recentSyncRuns(10),
     });
