@@ -11,7 +11,7 @@ import { fetchStoreDataServed } from "../../../lib/serve";
 import { consolidate } from "../../../lib/consolidate";
 import { mapLimit, cacheStats } from "../../../lib/shopifyql";
 import { isMockEnabled, buildMockPayload } from "../../../lib/mock";
-import { dbAvailable, coverage, getSql } from "../../../lib/db";
+import { dbAvailable } from "../../../lib/db";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60; // Vercel: allow slow multi-store fan-out
@@ -144,38 +144,6 @@ export async function GET(request) {
     }
   });
 
-  // ?probe=1 answers "is this function looking at the same database the sync
-  // wrote to?" — the one question a per-store source of "live-fallback" leaves
-  // open when /api/sync insists the rows are there.
-  let probe;
-  if (p.get("probe") === "1" && dbAvailable()) {
-    try {
-      const sql = getSql();
-      // Neon names every branch's database "neondb", so current_database() can't
-      // tell two branches apart — the host can.
-      const raw = process.env.DATABASE_URL || process.env.POSTGRES_URL || "";
-      probe = {
-        host: raw ? new URL(raw).host : null,
-        envVar: process.env.DATABASE_URL ? "DATABASE_URL" : "POSTGRES_URL",
-        where: await sql`SELECT current_database() AS db, current_schema() AS schema, current_user AS role`,
-        totals: await sql`SELECT count(*)::int AS rows, count(DISTINCT store_key)::int AS stores, min(day)::text AS min_day, max(day)::text AS max_day FROM daily_metrics`,
-        keys: await sql`SELECT DISTINCT store_key FROM daily_metrics`,
-        // Narrow down which bound parameter stops matching: the store key, the
-        // date bounds, or the date bounds without an explicit cast.
-        literal: await sql`SELECT count(*)::int AS n FROM daily_metrics WHERE store_key = 'number4hairpro' AND day >= '2026-07-15' AND day <= '2026-08-13'`,
-        paramKeyOnly: await sql`SELECT count(*)::int AS n FROM daily_metrics WHERE store_key = ${selected[0].key}`,
-        paramDatesOnly: await sql`SELECT count(*)::int AS n FROM daily_metrics WHERE day >= ${from} AND day <= ${to}`,
-        paramDatesCast: await sql`SELECT count(*)::int AS n FROM daily_metrics WHERE day >= ${from}::date AND day <= ${to}::date`,
-        keyBytes: JSON.stringify(selected[0].key),
-        bounds: JSON.stringify([from, to]),
-        coverage: await coverage(selected[0].key, from, to),
-        storeKey: selected[0].key,
-      };
-    } catch (err) {
-      probe = { error: err.message };
-    }
-  }
-
   const publicStores = selected
     .filter((s) => byStore[s.key])
     .map(({ key, label, color, icon, domain, group }) => ({ key, label, color, icon, domain, group }));
@@ -199,7 +167,6 @@ export async function GET(request) {
         database: dbAvailable() ? "connected" : "not configured",
         sources, // per store: "db" | "live" | "live-fallback"
         synced,  // per store: { days, minDay, maxDay } present in Postgres
-        ...(probe ? { probe } : {}),
         include,
       },
       lastUpdated: new Date().toISOString(),
