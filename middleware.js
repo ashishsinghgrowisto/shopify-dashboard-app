@@ -8,12 +8,19 @@
 //
 // Exempt from the gate:
 //   /api/auth/*  — Shopify's OAuth callback can't send basic auth
+//   /api/sync    — Vercel Cron authenticates with `Authorization: Bearer
+//                  $CRON_SECRET`, which this Basic-auth gate would reject
+//                  before the route ever ran. The route enforces CRON_SECRET
+//                  itself and refuses to run when it isn't set, so exempting
+//                  it here doesn't open anything up.
 //   /installed   — the neutral page merchants see inside their own Shopify admin
+//
+// Note these exemptions cover no route that returns cross-client data.
 
 import { NextResponse } from "next/server";
 
 export const config = {
-  matcher: ["/((?!api/auth|installed|_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!api/auth|api/sync|installed|_next/static|_next/image|favicon.ico).*)"],
 };
 
 function lockedResponse(message, detail) {
