@@ -20,7 +20,7 @@
 
 import { getAllStores } from "../../../lib/stores";
 import { syncAllStores } from "../../../lib/sync";
-import { dbAvailable, ensureSchema, recentSyncRuns } from "../../../lib/db";
+import { dbAvailable, ensureSchema, recentSyncRuns, coverage, lastSyncedDay } from "../../../lib/db";
 import { isoDate } from "../../../lib/queries";
 
 export const dynamic = "force-dynamic";
@@ -88,6 +88,28 @@ async function handle(request) {
   }
 
   const all = await getAllStores();
+
+  // ?status=1 reports what's actually in Postgres without syncing anything.
+  // Worth having: "the sync said it wrote 800 rows" and "the dashboard can read
+  // 800 rows" are different claims, and only the second one matters.
+  if (url.searchParams.get("status") === "1") {
+    await ensureSchema();
+    const today = isoDate(Date.now());
+    const perStore = {};
+    for (const s of all) {
+      perStore[s.key] = {
+        domain: s.domain,
+        lastSyncedDay: await lastSyncedDay(s.key),
+        last400Days: await coverage(s.key, isoDate(Date.now() - 399 * 86400000), today),
+      };
+    }
+    return Response.json({
+      database: "connected",
+      today,
+      stores: perStore,
+      recentRuns: await recentSyncRuns(10),
+    });
+  }
   const wanted = url.searchParams.get("store");
   const stores = wanted ? all.filter((s) => s.key === wanted) : all;
 
