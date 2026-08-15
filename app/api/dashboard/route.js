@@ -123,12 +123,16 @@ export async function GET(request) {
   const warnings = [];
   const failedStores = [];
   const sources = {};
+  const synced = {};
 
   selected.forEach((store, i) => {
     const r = settled[i];
     if (r && r.ok) {
       byStore[store.key] = r.value.data;
       sources[store.key] = r.value.source;
+      // How many days of this range the database actually held — the quickest
+      // way to tell a healthy sync from a stale one.
+      if (r.value.coverage) synced[store.key] = r.value.coverage;
       warnings.push(...r.value.warnings);
     } else {
       failedStores.push({
@@ -162,6 +166,7 @@ export async function GET(request) {
         storesReturned: publicStores.length,
         database: dbAvailable() ? "connected" : "not configured",
         sources, // per store: "db" | "live" | "live-fallback"
+        synced,  // per store: { days, minDay, maxDay } present in Postgres
         include,
       },
       lastUpdated: new Date().toISOString(),
