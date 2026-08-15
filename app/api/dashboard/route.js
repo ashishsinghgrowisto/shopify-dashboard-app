@@ -160,6 +160,14 @@ export async function GET(request) {
         where: await sql`SELECT current_database() AS db, current_schema() AS schema, current_user AS role`,
         totals: await sql`SELECT count(*)::int AS rows, count(DISTINCT store_key)::int AS stores, min(day)::text AS min_day, max(day)::text AS max_day FROM daily_metrics`,
         keys: await sql`SELECT DISTINCT store_key FROM daily_metrics`,
+        // Narrow down which bound parameter stops matching: the store key, the
+        // date bounds, or the date bounds without an explicit cast.
+        literal: await sql`SELECT count(*)::int AS n FROM daily_metrics WHERE store_key = 'number4hairpro' AND day >= '2026-07-15' AND day <= '2026-08-13'`,
+        paramKeyOnly: await sql`SELECT count(*)::int AS n FROM daily_metrics WHERE store_key = ${selected[0].key}`,
+        paramDatesOnly: await sql`SELECT count(*)::int AS n FROM daily_metrics WHERE day >= ${from} AND day <= ${to}`,
+        paramDatesCast: await sql`SELECT count(*)::int AS n FROM daily_metrics WHERE day >= ${from}::date AND day <= ${to}::date`,
+        keyBytes: JSON.stringify(selected[0].key),
+        bounds: JSON.stringify([from, to]),
         coverage: await coverage(selected[0].key, from, to),
         storeKey: selected[0].key,
       };
