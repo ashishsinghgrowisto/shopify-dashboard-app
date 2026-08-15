@@ -13,14 +13,22 @@
 //                  before the route ever ran. The route enforces CRON_SECRET
 //                  itself and refuses to run when it isn't set, so exempting
 //                  it here doesn't open anything up.
+//   /api/webhooks — Shopify signs each delivery with an HMAC and cannot send
+//                  basic auth. Gating it here would silently fail every
+//                  compliance webhook, which is both a review failure and a
+//                  real one: uninstalls would never be recorded. The route
+//                  verifies the HMAC itself and rejects anything unsigned.
 //   /installed   — the neutral page merchants see inside their own Shopify admin
+//   /privacy     — the privacy policy, which app review requires to be public
 //
 // Note these exemptions cover no route that returns cross-client data.
 
 import { NextResponse } from "next/server";
 
 export const config = {
-  matcher: ["/((?!api/auth|api/sync|installed|_next/static|_next/image|favicon.ico).*)"],
+  matcher: [
+    "/((?!api/auth|api/sync|api/webhooks|installed|privacy|_next/static|_next/image|favicon.ico).*)",
+  ],
 };
 
 function lockedResponse(message, detail) {
