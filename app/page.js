@@ -33,12 +33,13 @@ export default function Home() {
   const [range, setRange] = useState(defaults.range);
   const [compare, setCompare] = useState(defaults.compare);
   const [granularity, setGranularity] = useState(null);
+  const [filters, setFilters] = useState({});
   const [payload, setPayload] = useState(null);
   const [error, setError] = useState(null);
   const [hint, setHint] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  const load = useCallback(async (r, c, g, forceRefresh, include) => {
+  const load = useCallback(async (r, c, g, forceRefresh, include, f) => {
     setLoading(true);
     setError(null);
     const params = new URLSearchParams({
@@ -49,6 +50,8 @@ export default function Home() {
     // Only ask Shopify for the breakdowns the open tab actually shows. The
     // timeseries half is served from the synced database either way.
     if (include !== undefined) params.set("include", include);
+    // Filters force a live Shopify query (the synced table has no dimensions).
+    if (f && Object.keys(f).length) params.set("filters", JSON.stringify(f));
 
     try {
       const res = await fetch(`/api/dashboard?${params.toString()}`);
@@ -77,11 +80,13 @@ export default function Home() {
     const r = opts.range || range;
     const c = opts.compare || compare;
     const g = opts.granularity !== undefined ? opts.granularity : granularity;
+    const f = opts.filters !== undefined ? opts.filters : filters;
     if (opts.range) setRange(opts.range);
     if (opts.compare) setCompare(opts.compare);
     if (opts.granularity !== undefined) setGranularity(opts.granularity);
-    load(r, c, g, Boolean(opts.forceRefresh), opts.include);
-  }, [range, compare, granularity, load]);
+    if (opts.filters !== undefined) setFilters(opts.filters);
+    load(r, c, g, Boolean(opts.forceRefresh), opts.include, f);
+  }, [range, compare, granularity, filters, load]);
 
   if (!payload && loading) {
     return (
@@ -118,7 +123,7 @@ export default function Home() {
             the <code style={{ color: CL.al }}>read_reports</code> scope plus Level 2 protected customer
             data access.
           </p>
-          <button onClick={() => load(range, compare, granularity, true)} style={{
+          <button onClick={() => load(range, compare, granularity, true, undefined, filters)} style={{
             marginTop: 18, padding: "8px 16px", background: CL.al, color: CL.bg,
             border: "none", borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: "pointer",
           }}>Retry</button>

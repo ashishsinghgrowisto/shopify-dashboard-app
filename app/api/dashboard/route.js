@@ -4,6 +4,7 @@
 //
 // GET /api/dashboard?from=2026-07-01&to=2026-07-31&cfrom=2026-06-01&cto=2026-06-30
 // Optional: &granularity=day|week|month  &stores=cp,nb  &refresh=1
+//           &filters={"channel":["Online Store"],"traffic":["Paid"]}   (see lib/filters.js)
 
 import { getAllStores } from "../../../lib/stores";
 import { isoDate, pickGranularity } from "../../../lib/queries";
@@ -12,6 +13,7 @@ import { consolidate } from "../../../lib/consolidate";
 import { mapLimit, cacheStats } from "../../../lib/shopifyql";
 import { isMockEnabled, buildMockPayload } from "../../../lib/mock";
 import { dbAvailable } from "../../../lib/db";
+import { parseFilters, hasFilters } from "../../../lib/filters";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60; // Vercel: allow slow multi-store fan-out
@@ -110,12 +112,14 @@ export async function GET(request) {
         campaigns: rawInclude.split(",").map((s) => s.trim()).includes("campaigns"),
       };
 
+  const filters = parseFilters(p.get("filters"));
+
   const settled = await mapLimit(selected, storeConcurrency, (store) =>
     fetchStoreDataServed(
       store,
       { from, to },
       { from: cfrom, to: cto },
-      { granularity, forceRefresh, include, forceLive: p.get("live") === "1" }
+      { granularity, forceRefresh, include, filters, forceLive: p.get("live") === "1" }
     )
   );
 
@@ -154,6 +158,7 @@ export async function GET(request) {
       range: { from, to },
       compare: { from: cfrom, to: cto },
       granularity,
+      filters,
       stores: publicStores,
       byStore,
       all,
@@ -168,6 +173,7 @@ export async function GET(request) {
         sources, // per store: "db" | "live" | "live-fallback"
         synced,  // per store: { days, minDay, maxDay } present in Postgres
         include,
+        filtered: hasFilters(filters),
       },
       lastUpdated: new Date().toISOString(),
     },

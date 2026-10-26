@@ -252,7 +252,18 @@ function totals(d) {
   const reachedC = sum(d.rcp);
   const completed = sum(d.ck);
   const completedC = sum(d.ckp);
+  // Estimated product views — null when the store/range has no pageview data
+  const hasPv = Array.isArray(d.pv);
+  const hasPvC = Array.isArray(d.pvp);
+  const productViews = hasPv ? sum(d.pv) : null;
+  const productViewsC = hasPvC ? sum(d.pvp) : null;
   return {
+    hasPv, hasPvC, productViews, productViewsC,
+    pvShare: d.pvs ?? null, pvShareC: d.pvsp ?? null,
+    sessToPv: hasPv ? safeDiv(productViews, sessions) * 100 : null,
+    sessToPvC: hasPvC ? safeDiv(productViewsC, sessionsC) * 100 : null,
+    pvToCart: hasPv ? safeDiv(carts, productViews) * 100 : null,
+    pvToCartC: hasPvC ? safeDiv(cartsC, productViewsC) * 100 : null,
     netSales, netSalesC,
     grossSales: sum(d.gs), totalSales: sum(d.ts), discounts: sum(d.dc),
     orders, ordersC,
@@ -486,30 +497,40 @@ function AovView({ d, accent, rangeLabel, compareLabel }) {
   );
 }
 
-const FUNNEL_STAGES = ["Sessions", "Add to Cart", "Reached Checkout", "Completed"];
-const STAGE_COLORS = [CL.dm, CL.am, "#3B82F6", CL.gn];
+const STAGE_DEFS = [
+  { key: "sessions", label: "Sessions", color: CL.dm },
+  { key: "pv", label: "Product Views (est.)", color: "#A78BFA" },
+  { key: "cart", label: "Add to Cart", color: CL.am },
+  { key: "reached", label: "Reached Checkout", color: "#3B82F6" },
+  { key: "done", label: "Completed", color: CL.gn },
+];
 
-function FunnelPanel({ label, values, color }) {
-  const top = values[0] || 0;
+// values: same order as STAGE_DEFS; a null product-views value drops that stage
+function FunnelPanel({ label, values, color, note }) {
+  const stages = STAGE_DEFS.map((st, i) => ({ ...st, v: values[i] })).filter((st) => st.v != null);
+  const top = stages[0]?.v || 0;
   return (
     <div style={{ background: CL.cd, border: "1px solid " + CL.bd, borderRadius: 11, padding: 14 }}>
       <div style={{ fontSize: 11, fontWeight: 700, color, marginBottom: 10 }}>{label}</div>
-      {FUNNEL_STAGES.map((st, si) => {
-        const val = Math.round(values[si] || 0);
+      {stages.map((st, si) => {
+        const val = Math.round(st.v || 0);
         const share = top > 0 ? (val / top) * 100 : 0;
-        const drop = si > 0 && values[si - 1] > 0
-          ? (((values[si - 1] - val) / values[si - 1]) * 100).toFixed(1)
-          : null;
+        const prev = si > 0 ? stages[si - 1].v : 0;
+        const drop = si > 0 && prev > 0 ? (((prev - val) / prev) * 100).toFixed(1) : null;
         return (
-          <div key={si} style={{ marginBottom: si < 3 ? 2 : 0 }}>
+          <div key={st.key} style={{ marginBottom: si < stages.length - 1 ? 2 : 0 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
-              <span style={{ fontSize: 9, color: CL.mt, fontWeight: 600 }}>{st}</span>
+              <span style={{ fontSize: 9, color: CL.mt, fontWeight: 600 }}>{st.label}</span>
               <span style={{ fontSize: 10, fontWeight: 700, color: CL.tx }}>
                 {val.toLocaleString()} <span style={{ fontSize: 8, color: CL.dm }}>({share.toFixed(1)}%)</span>
               </span>
             </div>
             <div style={{ height: 18, background: CL.bg, borderRadius: 4, overflow: "hidden", marginBottom: 1 }}>
-              <div style={{ height: "100%", width: Math.max(share, 1.5) + "%", background: STAGE_COLORS[si], borderRadius: 4 }} />
+              <div style={{
+                height: "100%", width: Math.max(share, 1.5) + "%", background: st.color, borderRadius: 4,
+                // hatched fill marks the estimated stage
+                backgroundImage: st.key === "pv" ? "repeating-linear-gradient(45deg, transparent 0 5px, rgba(11,15,26,.25) 5px 8px)" : undefined,
+              }} />
             </div>
             {drop && (
               <div style={{ textAlign: "center", fontSize: 8, color: CL.rd, fontWeight: 600, padding: "1px 0" }}>
@@ -519,30 +540,47 @@ function FunnelPanel({ label, values, color }) {
           </div>
         );
       })}
+      {note && <div style={{ fontSize: 8, color: CL.dm, marginTop: 8, lineHeight: 1.5 }}>{note}</div>}
     </div>
   );
 }
 
+function pvNote(share, has) {
+  if (!has) return "Product Views unavailable — no pageview data for this range yet.";
+  return share != null
+    ? `Product Views = sessions × ${share.toFixed(1)}% (share of pageviews from product-landing sessions), kept between Sessions and Add to Cart.`
+    : "Product Views estimated from the product-landing share of pageviews.";
+}
+
 function FunnelView({ d, accent, rangeLabel, compareLabel, stores, byStore }) {
   const t = totals(d);
-  const cur = [t.sessions, t.carts, t.reached, t.completed];
-  const cmp = [t.sessionsC, t.cartsC, t.reachedC, t.completedC];
+  const cur = [t.sessions, t.productViews, t.carts, t.reached, t.completed];
+  const cmp = [t.sessionsC, t.productViewsC, t.cartsC, t.reachedC, t.completedC];
+  const pvSteps = t.hasPv
+    ? [
+        { l: "Sess → Product", a: t.sessToPv, b: t.sessToPvC },
+        { l: "Product → Cart", a: t.pvToCart, b: t.pvToCartC },
+      ]
+    : [{ l: "Sess → Cart", a: t.atcRate, b: t.atcRateC }];
   const steps = [
-    { l: "Sess → Cart", a: t.atcRate, b: t.atcRateC },
+    ...pvSteps,
     { l: "Cart → Chk", a: t.cartToChk, b: t.cartToChkC },
     { l: "Chk → Complete", a: t.chkToDone, b: t.chkToDoneC },
     { l: "Overall", a: t.convRate, b: t.convRateC },
   ];
+  const fmt = (v) => (v == null ? "—" : v.toFixed(2) + "%");
   return (
     <div>
       <SectionHead title="Conversion Funnel" range={rangeLabel} compare={compareLabel} accent={accent} />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
-        <FunnelPanel label={"Selected · " + rangeLabel} values={cur} color={accent} />
-        <FunnelPanel label={"Comparison · " + compareLabel} values={cmp} color={CL.am} />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12, marginBottom: 14 }}>
+        <FunnelPanel label={"Selected · " + rangeLabel} values={cur} color={accent}
+          note={pvNote(t.pvShare, t.hasPv) + (d.pvPartial ? " Stores without pageview data count at their Add to Cart level." : "")} />
+        <FunnelPanel label={"Comparison · " + compareLabel} values={cmp} color={CL.am}
+          note={t.hasPvC ? pvNote(t.pvShareC, true) : pvNote(null, false)} />
       </div>
       <CardGrid>
         {steps.map((m, i) => (
-          <Card key={i} label={m.l} value={m.a.toFixed(2) + "%"} sub={"was " + m.b.toFixed(2) + "%"} delta={m.b > 0 ? pct(m.a, m.b) : undefined} />
+          <Card key={i} label={m.l} value={fmt(m.a)} sub={"was " + fmt(m.b)} delta={m.a != null && m.b > 0 ? pct(m.a, m.b) : undefined} />
         ))}
       </CardGrid>
       {stores && stores.length > 1 && (
@@ -569,8 +607,11 @@ function FunnelView({ d, accent, rangeLabel, compareLabel, stores, byStore }) {
                 const sd = byStore[st.key];
                 if (!sd) return null;
                 const tt = totals(sd);
+                const pvRows = t.hasPv
+                  ? [[tt.sessToPv, tt.sessToPvC], [tt.pvToCart, tt.pvToCartC]]
+                  : [[tt.atcRate, tt.atcRateC]];
                 const rows = [
-                  [tt.atcRate, tt.atcRateC],
+                  ...pvRows,
                   [tt.cartToChk, tt.cartToChkC],
                   [tt.chkToDone, tt.chkToDoneC],
                   [tt.convRate, tt.convRateC],
@@ -579,9 +620,9 @@ function FunnelView({ d, accent, rangeLabel, compareLabel, stores, byStore }) {
                   <tr key={st.key}>
                     <LabelTd color={st.color}>{st.label}</LabelTd>
                     {rows.flatMap(([a, b], i) => [
-                      <PlainTd key={i + "a"} bold>{a.toFixed(2)}%</PlainTd>,
-                      <PlainTd key={i + "b"}>{b.toFixed(2)}%</PlainTd>,
-                      <DTd key={i + "d"} value={b > 0 ? pct(a, b) : null} />,
+                      <PlainTd key={i + "a"} bold>{fmt(a)}</PlainTd>,
+                      <PlainTd key={i + "b"}>{fmt(b)}</PlainTd>,
+                      <DTd key={i + "d"} value={a != null && b > 0 ? pct(a, b) : null} />,
                     ])}
                   </tr>
                 );
@@ -1042,6 +1083,165 @@ function ControlBar({ range, compare, onApply, granularity, onGranularity }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Filters
+// ═══════════════════════════════════════════════════════════════════
+// Options come from /api/filters (values seen across all stores, by volume).
+// Any active filter makes the dashboard query Shopify live, so changes are
+// staged in a draft and sent together on Apply.
+
+const FILTER_ORDER = [
+  { key: "channel", label: "Sales channel", hint: "Revenue & orders only — sessions are Online Store visits" },
+  { key: "traffic", label: "Traffic type", hint: "Sessions & orders" },
+  { key: "source", label: "Referrer source", hint: "Sessions & orders" },
+  { key: "medium", label: "Referrer medium", hint: "Sessions & orders" },
+  { key: "landing", label: "Landing page type", hint: "Sessions & funnel only" },
+];
+
+function FilterBar({ active, range, onApply, loading }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(active || {});
+  const [opts, setOpts] = useState(null);
+  const [optsFor, setOptsFor] = useState("");
+  const [optsErr, setOptsErr] = useState(null);
+  const [expanded, setExpanded] = useState({});
+
+  const activeCount = Object.values(active || {}).reduce((n, v) => n + (v?.length || 0), 0);
+  const rangeKey = range.from + "_" + range.to;
+
+  async function loadOptions() {
+    if (opts && optsFor === rangeKey) return;
+    setOptsErr(null);
+    try {
+      const res = await fetch(`/api/filters?from=${range.from}&to=${range.to}`);
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || "HTTP " + res.status);
+      setOpts(json.options);
+      setOptsFor(rangeKey);
+    } catch (err) {
+      setOptsErr(err.message);
+    }
+  }
+
+  function toggleOpen() {
+    const next = !open;
+    setOpen(next);
+    if (next) {
+      setDraft(active || {});
+      loadOptions();
+    }
+  }
+
+  function toggleValue(key, value) {
+    const cur = draft[key] || [];
+    const nextVals = cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value];
+    const next = { ...draft };
+    if (nextVals.length) next[key] = nextVals;
+    else delete next[key];
+    setDraft(next);
+  }
+
+  function removeActive(key, value) {
+    const next = { ...(active || {}) };
+    next[key] = (next[key] || []).filter((v) => v !== value);
+    if (!next[key].length) delete next[key];
+    onApply(next);
+  }
+
+  const chip = (on) => ({
+    padding: "3px 8px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit",
+    fontSize: 10, fontWeight: 600, whiteSpace: "nowrap",
+    border: "1px solid " + (on ? CL.al : CL.bd),
+    background: on ? CL.al + "22" : CL.cd,
+    color: on ? CL.al : CL.mt,
+  });
+
+  const draftJson = JSON.stringify(draft);
+  const dirty = draftJson !== JSON.stringify(active || {});
+
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+        <button onClick={toggleOpen} style={{
+          ...chip(open || activeCount > 0), borderRadius: 6, padding: "5px 11px", fontSize: 10,
+        }}>
+          {"⚲"} Filters{activeCount ? ` (${activeCount})` : ""} {open ? "▴" : "▾"}
+        </button>
+        {FILTER_ORDER.flatMap((f) =>
+          (active?.[f.key] || []).map((v) => (
+            <span key={f.key + v} style={{ ...chip(true), cursor: "default", display: "inline-flex", gap: 5, alignItems: "center" }}>
+              <span style={{ color: CL.dm, fontWeight: 500 }}>{f.label}:</span> {v}
+              <button onClick={() => removeActive(f.key, v)} disabled={loading} title="Remove filter"
+                style={{ background: "none", border: "none", color: CL.al, cursor: "pointer", padding: 0, fontSize: 11, lineHeight: 1 }}>×</button>
+            </span>
+          ))
+        )}
+        {activeCount > 0 && (
+          <>
+            <button onClick={() => onApply({})} disabled={loading} style={{ ...chip(false), borderRadius: 6 }}>Clear all</button>
+            <span style={{ fontSize: 9, color: CL.dm }}>Filtered views are queried live from Shopify.</span>
+          </>
+        )}
+      </div>
+
+      {open && (
+        <div style={{ background: CL.bg, border: "1px solid " + CL.bd, borderRadius: 8, padding: "10px 12px", marginTop: 6 }}>
+          {!opts && !optsErr && <div style={{ fontSize: 10, color: CL.dm }}>Loading filter values from your stores…</div>}
+          {optsErr && (
+            <div style={{ fontSize: 10, color: CL.rd }}>
+              Couldn&apos;t load filter values: {optsErr}{" "}
+              <button onClick={() => { setOpts(null); loadOptions(); }} style={chip(false)}>Retry</button>
+            </div>
+          )}
+          {opts && FILTER_ORDER.map((f) => {
+            const values = opts[f.key]?.values || [];
+            const showAll = expanded[f.key];
+            const selected = draft[f.key] || [];
+            // keep already-selected values visible even if they fall outside the top list
+            const shown = [...new Set([...(showAll ? values : values.slice(0, 12)).map((x) => x.value), ...selected])];
+            return (
+              <div key={f.key} style={{ marginBottom: 9 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "baseline", marginBottom: 4 }}>
+                  <span style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: CL.tx }}>{f.label}</span>
+                  <span style={{ fontSize: 8, color: CL.dm }}>{f.hint}</span>
+                </div>
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                  {shown.length === 0 && <span style={{ fontSize: 9, color: CL.dm }}>No values in this range</span>}
+                  {shown.map((v) => (
+                    <button key={v} onClick={() => toggleValue(f.key, v)} style={chip(selected.includes(v))}>{v}</button>
+                  ))}
+                  {values.length > 12 && (
+                    <button onClick={() => setExpanded({ ...expanded, [f.key]: !showAll })}
+                      style={{ ...chip(false), border: "1px dashed " + CL.bd }}>
+                      {showAll ? "Show fewer" : `+${values.length - 12} more`}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          {opts && (
+            <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+              <button onClick={() => { onApply(draft); setOpen(false); }} disabled={!dirty || loading}
+                style={{
+                  padding: "6px 14px", borderRadius: 6, border: "none", fontFamily: "inherit",
+                  fontSize: 11, fontWeight: 700, cursor: dirty ? "pointer" : "default",
+                  background: dirty ? CL.al : CL.gr, color: dirty ? CL.bg : CL.dm,
+                }}>
+                Apply filters
+              </button>
+              <button onClick={() => setDraft({})} style={{ ...chip(false), borderRadius: 6 }}>Reset</button>
+              <span style={{ fontSize: 9, color: CL.dm, alignSelf: "center" }}>
+                Values within a filter are OR&apos;d; different filters are AND&apos;d.
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Warnings
 // ═══════════════════════════════════════════════════════════════════
 
@@ -1202,6 +1402,13 @@ export default function Dashboard({ payload, onRefetch, loading }) {
           granularity={payload.granularity}
           onGranularity={(g) => refetchWith({ granularity: g })}
           onApply={(r, c) => refetchWith({ range: r, compare: c })}
+        />
+
+        <FilterBar
+          active={payload.filters || {}}
+          range={range}
+          loading={loading}
+          onApply={(f) => refetchWith({ filters: f })}
         />
 
         <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
